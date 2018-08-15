@@ -39,9 +39,10 @@ else:
 
 
 EXTRA_REQUIRE = {
-    'tf': ['tensorflow>=1.4.0'],
+    'tf'    : ['tensorflow>=1.4.0'],
     'tf_gpu': ['tensorflow-gpu>=1.4.0'],
-    'test' : ['pytest>=3.0.0', 'Pillow>=3.0'],
+    'test'  : ['pytest>=3.0.0', 'Pillow>=3.0'],
+    'torch' : ['torchvision>=0.2.1'],
 }
 
 packages = setuptools.find_packages()
