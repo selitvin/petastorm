@@ -14,7 +14,7 @@
 
 ###
 # Adapted to petastorm dataset using original contents from
-# pytorch/examples/mnist/main.py .
+# https://github.com/pytorch/examples/mnist/main.py .
 ###
 from __future__ import print_function
 import argparse
@@ -118,8 +118,9 @@ def main():
 
     def transform_row(mnist_row):
         transform = transforms.Compose([
-           transforms.ToTensor(),
-           transforms.Normalize((0.1307,), (0.3081,))
+            transforms.Lambda(lambda nd: nd.reshape(28, 28, 1)),
+            transforms.ToTensor(),
+            transforms.Normalize((0.1307,), (0.3081,))
         ])
         return (transform(mnist_row.image), mnist_row.digit)
 
