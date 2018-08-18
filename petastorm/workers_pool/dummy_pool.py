@@ -33,6 +33,8 @@ class DummyPool(object):
         self._results_queue = []
         self._worker = None
         self._ventilator = None
+        self._never_ventilated = True
+ 
 
     def start(self, worker_class, worker_args=None, ventilator=None):
         # Instantiate a single worker with all the args
@@ -45,6 +47,7 @@ class DummyPool(object):
     def ventilate(self, *args, **kargs):
         """Send a work item to a worker process."""
         self._ventilator_queue.append((args, kargs))
+        self._never_ventilated = False
 
     def get_results(self, timeout=None):
         """Returns results
@@ -59,10 +62,13 @@ class DummyPool(object):
             return self._results_queue.pop(0)
         else:
             # If we don't have any tasks waiting for processing, then indicate empty queue
-            while self._ventilator_queue or (self._ventilator and not self._ventilator.completed()):
+            # We can not know if get_results() was called before ventilator got a chance to make its call to 
+            # ventilate. If we don't track self._never_ventilated we might exit get_results() thinking no future
+            # results are coming. 
+            while self._never_ventilated or self._ventilator_queue or (self._ventilator and not self._ventilator.completed()):
 
                 # To prevent a race condition of the ventilator working but not yet placing an item
-                # on the ventilator queue. We block until something is on the ventilator queue.
+                # on the ventilator queue, we give ventilator some time and then retry.
                 while not self._ventilator_queue:
                     sleep(.1)
 

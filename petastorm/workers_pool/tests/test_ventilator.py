@@ -75,16 +75,6 @@ class TestWorkersPool(unittest.TestCase):
             pool.stop()
             pool.join()
 
-    def test_empty_ventilation(self):
-        pool = DummyPool()
-        ventilator = ConcurrentVentilator(pool.ventilate, [])
-        pool.start(IdentityWorker, ventilator=ventilator)
-        with self.assertRaises(EmptyResultError):
-            pool.get_results()
-
-        pool.stop()
-        pool.join()
-
     def test_multiple_iterations(self):
         size = 10
         iterations = 5
