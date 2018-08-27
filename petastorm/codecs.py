@@ -20,6 +20,8 @@ transitively to parquet files.
 NOTE: Due to the way unischema is stored alongside dataset (with pickling), changing any of these codecs class names
 and fields can result in reader breakages.
 """
+import decimal
+
 import cv2
 from io import BytesIO
 from abc import abstractmethod
@@ -165,7 +167,15 @@ class ScalarCodec(DataframeColumnCodec):
     """Encodes a scalar into a spark dataframe field."""
 
     def __init__(self, spark_type):
-        """Constructs a codec.
+        """Constructs a scalar encoding codec.
+
+        Scalars are persisted as native parquet types (e.g. ``pyspark.sql.types.StringType``).
+
+        NOTE: The codec behaves incoherently with ``decimal.Decimal`` type. When decoding, the value is going to be
+        decoded as a string. While the original intent was to fully support Decimal data types, it is not natively
+        supported by Tensorflow and ``pyarrow.serialization`` package. We also found the decimal datatype somewhat
+        limited. Decoding decimal values as strings simplifies the handling in the downstream component, although,
+        it might need to be moved out of the codec class in the future.
 
         :param spark_type: an instance of a Type object from :mod:`pyspark.sql.types`
         """
@@ -181,7 +191,14 @@ class ScalarCodec(DataframeColumnCodec):
         return array
 
     def decode(self, unischema_field, value):
-        return unischema_field.numpy_dtype(value)
+        # We are using pyarrow.serialize that does not support Decimal field types.
+        # Tensorflow does not support Decimal types neither. We convert all decimals to
+        # strings hence prevent Decimals from getting into anywhere in the reader. We may
+        # choose to resurrect Decimals support in the future.
+        if isinstance(value, decimal.Decimal):
+            return str(value.normalize())
+        else:
+            return unischema_field.numpy_dtype(value)
 
     def spark_dtype(self):
         return self._spark_type
