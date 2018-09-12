@@ -67,11 +67,7 @@ def _sanitize_field_tf_types(sample):
             raise RuntimeError('Encountered "{}"=None. Tensorflow does not support None values as a tensor.'
                                'Consider filtering out these rows using a predicate.'.format(k))
         # Assuming conversion to the same numpy type is trivial and dirty cheap
-        if isinstance(v, Decimal):
-            # Normalizing decimals only to get rid of the trailing zeros (makes testing easier, assuming has
-            # no other effect)
-            next_sample_dict[k] = str(v.normalize())
-        elif isinstance(v, np.ndarray) and v.dtype == np.uint16:
+        if isinstance(v, np.ndarray) and v.dtype == np.uint16:
             next_sample_dict[k] = v.astype(np.int32)
 
     # Construct object of the same type as the input

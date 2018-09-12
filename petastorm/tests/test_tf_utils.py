@@ -39,7 +39,6 @@ class SanitizeTfTypesTest(unittest.TestCase):
         sample_input_dict = {
             'int32': np.asarray([-2 ** 31, 0, 100, 2 ** 31 - 1], dtype=np.int32),
             'uint16': np.asarray([0, 2, 2 ** 16 - 1], dtype=np.uint16),
-            'Decimal': Decimal(1234) / Decimal(10),
         }
 
         TestNamedTuple = namedtuple('TestNamedTuple', sample_input_dict.keys())
@@ -48,11 +47,9 @@ class SanitizeTfTypesTest(unittest.TestCase):
 
         np.testing.assert_equal(sanitized_tuple.int32.dtype, np.int32)
         np.testing.assert_equal(sanitized_tuple.uint16.dtype, np.int32)
-        self.assertTrue(isinstance(sanitized_tuple.Decimal, str))
 
         np.testing.assert_equal(sanitized_tuple.int32, sample_input_dict['int32'])
         np.testing.assert_equal(sanitized_tuple.uint16, sample_input_dict['uint16'])
-        np.testing.assert_equal(str(sanitized_tuple.Decimal), str(sample_input_dict['Decimal'].normalize()))
 
 
 class SchemaToTfDtypesTest(unittest.TestCase):
