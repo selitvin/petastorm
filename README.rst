@@ -1,6 +1,9 @@
-=========
 Petastorm
 =========
+.. image:: docs/logo.png
+     :width: 100pt
+     :align: center
+     :alt: logo
 
 .. image:: https://travis-ci.com/uber/petastorm.svg?branch=master
    :target: https://travis-ci.com/uber/petastorm
