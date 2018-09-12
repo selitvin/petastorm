@@ -15,7 +15,6 @@
 """A set of Tensorflow specific helper functions for the unischema"""
 import warnings
 from collections import OrderedDict, namedtuple
-from decimal import Decimal
 
 import numpy as np
 import sys
@@ -36,7 +35,6 @@ _NUMPY_TO_TF_DTYPES_MAPPING = {
     np.unicode_: tf.string,
     np.str_: tf.string,
     np.bool_: tf.bool,
-    Decimal: tf.string,
 }
 
 # Name of an op in the TF graph used for the random shuffling queue. This name can be used by diagnostics code that
@@ -54,7 +52,6 @@ def _sanitize_field_tf_types(sample):
     """Takes a named tuple and casts/promotes types unknown to TF to the types that are known.
 
     Two casts that are currently implemented
-      - Decimal to string
       - uint16 to int32
 
     :param sample: named tuple or a dictoinary
@@ -67,11 +64,7 @@ def _sanitize_field_tf_types(sample):
             raise RuntimeError('Encountered "{}"=None. Tensorflow does not support None values as a tensor.'
                                'Consider filtering out these rows using a predicate.'.format(k))
         # Assuming conversion to the same numpy type is trivial and dirty cheap
-        if isinstance(v, Decimal):
-            # Normalizing decimals only to get rid of the trailing zeros (makes testing easier, assuming has
-            # no other effect)
-            next_sample_dict[k] = str(v.normalize())
-        elif isinstance(v, np.ndarray) and v.dtype == np.uint16:
+        if isinstance(v, np.ndarray) and v.dtype == np.uint16:
             next_sample_dict[k] = v.astype(np.int32)
 
     # Construct object of the same type as the input
@@ -207,7 +200,7 @@ def _tf_tensors_nonngram(reader, shuffling_queue_capacity, min_after_dequeue):
     # TODO(yevgeni): implement a mechanism for signaling that we have no more data
     def dequeue_sample_impl(x):
         next_sample = next(reader)
-        # Decimal is not supported by TF. int8,16,32,64 scalars are all returned as python native int type
+        # int8,16,32,64 scalars are all returned as python native int type
         # (casted to 64 bit by tensorflow). sanitize_field_tf_types will explicitly convert all values
         # to explicit numpy types making it compatible with return values expected by Tensorflow
         return _sanitize_field_tf_types(next_sample)
