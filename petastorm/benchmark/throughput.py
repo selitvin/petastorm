@@ -26,8 +26,7 @@ import six
 import tensorflow as tf
 
 from petastorm.etl.dataset_metadata import get_schema_from_dataset_url
-from petastorm.reader import Reader, ReaderV2
-from petastorm.reader_impl.same_thread_executor import SameThreadExecutor
+from petastorm.reader import Reader
 from petastorm.reader_impl.shuffling_buffer import RandomShufflingBuffer
 from petastorm.tf_utils import tf_tensors
 from petastorm.workers_pool.dummy_pool import DummyPool

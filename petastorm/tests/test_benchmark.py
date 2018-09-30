@@ -1,3 +1,4 @@
+
 #  Copyright (c) 2017-2018 Uber Technologies, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -21,7 +22,7 @@ try:
 except ImportError:
     from mock import mock
 
-from petastorm.benchmark.throughput import reader_throughput, reader_v2_throughput, \
+from petastorm.benchmark.throughput import reader_throughput, \
     _filter_schema_fields, _time_warmup_and_work, WorkerPoolType, ReadMethod
 from petastorm.unischema import Unischema, UnischemaField
 
@@ -53,16 +54,6 @@ def test_all_fields(synthetic_dataset):
     reader_throughput(synthetic_dataset.url, None, warmup_cycles_count=5, measure_cycles_count=5,
                       pool_type=WorkerPoolType.THREAD, loaders_count=1, read_method=ReadMethod.PYTHON)
 
-
-def test_experimental_reader(synthetic_dataset):
-    reader_v2_throughput(synthetic_dataset.url, None, warmup_cycles_count=5, measure_cycles_count=5,
-                         pool_type=WorkerPoolType.THREAD, loaders_count=1, read_method=ReadMethod.PYTHON)
-
-
-def test_tf_thread_pool_run_experimental(synthetic_dataset):
-    reader_v2_throughput(synthetic_dataset.url, field_regex=[r'\bid\b', r'\bmatrix\b'], warmup_cycles_count=5,
-                         measure_cycles_count=5, pool_type=WorkerPoolType.THREAD, loaders_count=1,
-                         read_method=ReadMethod.TF)
 
 
 def test_filter_schema_fields_from_url():
