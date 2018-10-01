@@ -14,6 +14,7 @@
 from __future__ import division
 
 import hashlib
+import time
 
 import numpy as np
 from pyarrow import parquet as pq
@@ -71,6 +72,7 @@ class ReaderWorker(WorkerBase):
         :return:
         """
 
+        t0 = time.time()
         if not self._dataset:
             self._dataset = pq.ParquetDataset(
                 self._dataset_url_parsed.path,
@@ -82,6 +84,7 @@ class ReaderWorker(WorkerBase):
         # Create pyarrow file system
         parquet_file = ParquetFile(self._dataset.fs.open(piece.path))
 
+        t_open = time.time()
         if not isinstance(self._local_cache, NullCache):
             if worker_predicate:
                 raise RuntimeError('Local cache is not supported together with predicates, '
@@ -101,7 +104,8 @@ class ReaderWorker(WorkerBase):
                                           piece.path, piece_index)
             all_cols = self._local_cache.get(cache_key,
                                              lambda: self._load_rows(parquet_file, piece, shuffle_row_drop_partition))
-
+        t_done = time.time()
+        # print('worker:', t_open - t0, t_done - t_open, float(len(all_cols))/(t_done - t0))
         if self._ngram:
             all_cols = self._ngram.form_ngram(data=all_cols, schema=self._schema)
 
@@ -116,9 +120,13 @@ class ReaderWorker(WorkerBase):
         partitions = self._dataset.partitions
         column_names = set(field.name for field in self._schema.fields.values()) - partitions.partition_names
 
+        t0 = time.time()
         all_rows = self._read_with_shuffle_row_drop(piece, pq_file, column_names, shuffle_row_drop_range)
-
-        return [utils.decode_row(row, self._schema) for row in all_rows]
+        t1 = time.time()
+        result = [utils.decode_row(row, self._schema) for row in all_rows]
+        t2 = time.time()
+        # print('loading:', t1 - t0, t2 - t1)
+        return result
 
     def _load_rows_with_predicate(self, pq_file, piece, worker_predicate, shuffle_row_drop_partition):
         """Loads all rows that match a predicate from a piece"""

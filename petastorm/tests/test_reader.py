@@ -11,11 +11,14 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from time import sleep
+
 import pyarrow.parquet as pq
 import pytest
 
 from petastorm.reader import Reader, ShuffleOptions
 from petastorm.reader_impl.reader_v2 import ReaderV2
+from petastorm.workers_pool.process_pool import ProcessPool
 
 READER_FACTORIES = [
     Reader,
@@ -61,3 +64,15 @@ def test_normalize_shuffle_partitions(synthetic_dataset):
     shuffle_options = ShuffleOptions(True, 1000)
     Reader._normalize_shuffle_options(shuffle_options, dataset)
     assert shuffle_options.shuffle_row_drop_partitions == 10
+
+def test_bound_size_of_output_queue_size_reader(synthetic_dataset):
+    """Limit the output queue size to 5. Make sure the reader does not overrun the target output queue size.
+    This test is timing sensitive so it might become flaky"""
+    TIME_TO_GET_TO_OUTPUT_QUEUE_OF_5 = 3000.0
+    DELTA_T = 0.1
+
+    with Reader(synthetic_dataset.url, reader_pool=ProcessPool(1)) as reader:
+        next(reader)
+        assert 1 == reader.diagnostics['delivered_count']
+        sleep(0.5)
+        assert 2 > reader.diagnostics['in_processing_count']

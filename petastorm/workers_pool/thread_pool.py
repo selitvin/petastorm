@@ -140,6 +140,7 @@ class ThreadPool(object):
         """
         self._ventilated_items += 1
         self._ventilator_queue.put((args, kargs))
+        return True
 
     def get_results(self, timeout=None):
         """Returns results from worker pool or re-raise worker's exception if any happen in worker thread.
@@ -214,3 +215,8 @@ class ThreadPool(object):
 
     def results_qsize(self):
         return self._results_queue.qsize()
+
+    @property
+    def diagnostics(self):
+        return {'output_queue_size': self._workers_pool.results_qsize()}
+

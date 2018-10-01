@@ -15,14 +15,17 @@
 """This pool is different from standard Python pool implementations by the fact that the workers are spawned
 without using fork. Some issues with using jvm based HDFS driver were observed when the process was forked
 (could not access HDFS from the forked worker if the driver was already used in the parent process)"""
+import pickle
 import sys
 from time import sleep, time
 from traceback import format_exc
 
+import pyarrow
 import zmq
 from zmq import ZMQBaseError
 from zmq.utils import monitor
 
+from petastorm.reader_impl.pickle_serializer import PickleSerializer
 from petastorm.reader_impl.pyarrow_serializer import PyArrowSerializer
 from petastorm.workers_pool import EmptyResultError, VentilatedItemProcessedMessage, \
     TimeoutWaitingForResultError
@@ -96,7 +99,7 @@ class ProcessPool(object):
         self._ventilated_items = 0
         self._ventilated_items_processed = 0
         self._ventilator = None
-        self._serializer = PyArrowSerializer() if pyarrow_serialize else None
+        self._serializer = PyArrowSerializer() if pyarrow_serialize else PickleSerializer()
 
     def _create_local_socket_on_random_port(self, context, socket_type):
         """Creates a zmq socket on a random port.
@@ -187,6 +190,10 @@ class ProcessPool(object):
 
     def ventilate(self, *args, **kargs):
         """Sends a work item to a worker process. Will result in worker.process(...) call with arbitrary arguments."""
+
+        if self._ventilated_items - self._ventilated_items_processed >= self._workers_count:
+            # print('Blocking')
+            return False
         self._ventilated_items += 1
 
         # There is a race condition when sending objects to zmq that if all workers have been killed, sending objects
@@ -195,6 +202,7 @@ class ProcessPool(object):
         _keep_retrying_while_zmq_again(_KEEP_TRYING_WHILE_ZMQ_AGAIN_IS_RAIZED_TIMEOUT_S,
                                        lambda: self._ventilator_send.send_pyobj((args, kargs),
                                                                                 flags=zmq.constants.NOBLOCK))
+        return True
 
     def get_results(self, timeout=None):
         """Returns results from worker pool
@@ -215,22 +223,29 @@ class ProcessPool(object):
             socks = self._results_receiver_poller.poll(timeout * 1e3 if timeout else None)
             if not socks:
                 raise TimeoutWaitingForResultError()
-            result = self._results_receiver.recv_pyobj(0)
-            if isinstance(result, VentilatedItemProcessedMessage):
-                self._ventilated_items_processed += 1
-                if self._ventilator:
-                    self._ventilator.processed_item()
-                continue
-            if isinstance(result, Exception):
+            t0 = time()
+            # result = self._results_receiver.recv_pyobj(0)
+            result, result_pickle = self._results_receiver.recv_multipart(copy=False)
+            result_pickle = pickle.loads(result_pickle)
+            # pyarrow.
+            t_pop = time()
+            # if isinstance(result, VentilatedItemProcessedMessage):
+            self._ventilated_items_processed += 1
+            if self._ventilator:
+                self._ventilator.processed_item()
+                # continue
+            if result_pickle:
+                assert isinstance(result_pickle, Exception)
                 self.stop()
                 self.join()
                 raise result
             else:
-                if self._serializer:
-                    deserialized_result = self._serializer.deserialize(result)
-                else:
-                    deserialized_result = result
-
+                t1 = time()
+                deserialized_result = self._serializer.deserialize(result.buffer)
+                # deserialized_result = pyarrow.deserialize(pyarrow.py_buffer(result.buffer.tobytes()))
+                # deserialized_result = self._serializer.deserialize(result)
+                t_des = time()
+                print('                                                pool:', t_pop - t0, t_des - t1)
                 return deserialized_result
 
     def stop(self):
@@ -256,12 +271,17 @@ class ProcessPool(object):
         self._results_receiver.close()
         self._context.destroy()
 
+    @property
+    def diagnostics(self):
+        return {
+            'ventilated_count': self._ventilated_items,
+            'delivered_count': self._ventilated_items_processed,
+            'in_processing_count': self._ventilated_items - self._ventilated_items_processed,
+        }
+
 
 def _serialize_result_and_send(socket, serializer, data):
-    if serializer:
-        socket.send_pyobj(serializer.serialize(data))
-    else:
-        socket.send_pyobj(data)
+    socket.send_multipart([serializer.serialize(data), pickle.dumps(None)])
 
 
 def _worker_bootstrap(worker_class, worker_id, control_socket, worker_receiver_socket, results_sender_socket,
@@ -313,12 +333,12 @@ def _worker_bootstrap(worker_class, worker_id, control_socket, worker_receiver_s
             try:
                 args, kargs = work_receiver.recv_pyobj()
                 worker.process(*args, **kargs)
-                results_sender.send_pyobj(VentilatedItemProcessedMessage())
+                # results_sender.send_pyobj(VentilatedItemProcessedMessage())
             except Exception as e:  # pylint: disable=broad-except
                 stderr_message = 'Worker %d terminated: unexpected exception:\n' % worker_id
                 stderr_message += format_exc()
                 sys.stderr.write(stderr_message)
-                results_sender.send_pyobj(e)
+                results_sender.send_multipart([serializer.serialize(None), e])
                 return
 
         # If the message came over the control channel, shut down the worker.

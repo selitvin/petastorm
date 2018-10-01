@@ -126,8 +126,9 @@ def _time_warmup_and_work_tf_dataset(reader, warmup_cycles_count, measure_cycles
         coord = tf.train.Coordinator()
         threads = tf.train.start_queue_runners(coord=coord, start=True, sess=sess)
 
-        # result = sess.run(sample)
-        # print(type(result), result, type(result))
+        # for _ in range(10000):
+        #     result = sess.run(sample)
+        #     print(type(result), )
         # exit(1)
         #
         result = _time_warmup_and_work(reader, warmup_cycles_count, measure_cycles_count,

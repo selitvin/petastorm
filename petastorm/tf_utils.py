@@ -75,7 +75,8 @@ def _sanitize_field_tf_types(sample):
             next_sample_dict[k] = v.astype(np.int32)
 
     # Construct object of the same type as the input
-    return sample.__class__(**next_sample_dict)
+    result = sample.__class__(**next_sample_dict)
+    return result
 
 
 def _schema_to_tf_dtypes(schema):
@@ -357,6 +358,7 @@ def make_petastorm_dataset(reader):
     if not reader.ngram:
 
         def dequeue_sample_impl():
+            print("!!!! dequeue_sample_impl")
             if reader.last_row_consumed:
                 # This means that Dataset is trying to create a new instance of the generator. Can not do that
                 # (nor want to do that) since this is an expensive operation. num_epochs is a more efficient way
@@ -364,7 +366,7 @@ def make_petastorm_dataset(reader):
                 raise RuntimeError('Multiple iterations over make_petastorm_dataset are not supported. '
                                    'Multiple iterations can be triggered by calling \'repeat\' method of Datset class.'
                                    'Use Reader\'s num_epochs contructor arguments to set number of iterations.')
-            return map(_sanitize_field_tf_types, reader)
+            return reader #list(map(_sanitize_field_tf_types, reader))
 
         flat_dataset = tf.data.Dataset.from_generator(dequeue_sample_impl, tuple(_schema_to_tf_dtypes(reader.schema)))
         named_tuple_dataset = flat_dataset \

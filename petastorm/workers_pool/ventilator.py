@@ -135,7 +135,10 @@ class ConcurrentVentilator(Ventilator):
                 continue
 
             item_to_ventilate = self._items_to_ventilate[self._current_item_to_ventilate]
-            self._ventilate_fn(**item_to_ventilate)
+            if not self._ventilate_fn(**item_to_ventilate):
+                sleep(self._ventilation_interval)
+                continue
+
             self._current_item_to_ventilate += 1
             self._ventilated_items_count += 1
 

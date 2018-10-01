@@ -11,18 +11,17 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import pickle
 
 import pyarrow
 
 from petastorm.codecs import decimal_to_str
 
 
-class PyArrowSerializer(object):
+class PickleSerializer(object):
 
     def serialize(self, rows):
-        # pyarrow.serialize does not support decimals.
-        decimal_to_str(rows)
-        return pyarrow.serialize(rows).to_buffer()
+        return pickle.dumps(rows)
 
     def deserialize(self, serialized_rows):
-        return pyarrow.deserialize(serialized_rows)
+        return pickle.loads(serialized_rows)

@@ -45,6 +45,7 @@ class DummyPool(object):
     def ventilate(self, *args, **kargs):
         """Send a work item to a worker process."""
         self._ventilator_queue.append((args, kargs))
+        return True
 
     def get_results(self, timeout=None):
         """Returns results
@@ -84,3 +85,7 @@ class DummyPool(object):
 
     def join(self):
         pass
+
+    @property
+    def diagnostics(self):
+        return dict()

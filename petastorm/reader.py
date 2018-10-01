@@ -15,6 +15,7 @@
 import collections
 import logging
 import os
+import time
 import warnings
 
 import six
@@ -153,12 +154,12 @@ class Reader(object):
                 logger.warning('shuffle option is deprecated. Please use shuffle_options instead')
             shuffle_options = petastorm.shuffle_options.ShuffleOptions(shuffle)
         self._normalize_shuffle_options(shuffle_options, self.dataset)
-        ventilator = self._create_ventilator(filtered_row_group_indexes, shuffle_options, num_epochs, worker_predicate)
+        self._ventilator = self._create_ventilator(filtered_row_group_indexes, shuffle_options, num_epochs, worker_predicate)
 
         # 5. Start workers pool
         self._workers_pool.start(ReaderWorker,
                                  (dataset_url, self.schema, self.ngram, row_groups, cache, filesystem),
-                                 ventilator=ventilator)
+                                 ventilator=self._ventilator)
         self._read_timeout_s = read_timeout_s
         self.last_row_consumed = False
 
@@ -314,12 +315,7 @@ class Reader(object):
 
     @property
     def diagnostics(self):
-        diags = {}
-        if hasattr(self._workers_pool, 'results_qsize'):
-            diags['output_queue_size'] = self._workers_pool.results_qsize()
-        else:
-            diags['output_queue_size'] = None
-        return diags
+        return self._workers_pool.diagnostics
 
     def __iter__(self):
         return self
@@ -331,7 +327,10 @@ class Reader(object):
             if not self._result_buffer:
                 # Reverse order, so we can pop from the end of the list in O(1) while maintaining
                 # order the items are returned from the worker
-                rows_as_dict = list(reversed(self._workers_pool.get_results(timeout=self._read_timeout_s)))
+                t0 = time.time()
+                next_group = self._workers_pool.get_results(timeout=self._read_timeout_s)
+                t1 = time.time()
+                rows_as_dict = list(reversed(next_group))
 
                 if self.ngram:
                     for ngram_row in rows_as_dict:
@@ -343,7 +342,8 @@ class Reader(object):
                     self._result_buffer = rows_as_dict
                 else:
                     self._result_buffer = [self.schema.make_namedtuple(**row) for row in rows_as_dict]
-
+                t2 = time.time()
+                print(t1-t0, t2-t1)
             return self._result_buffer.pop()
 
         except EmptyResultError:
