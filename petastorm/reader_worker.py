@@ -118,7 +118,7 @@ class ReaderWorker(WorkerBase):
 
         all_rows = self._read_with_shuffle_row_drop(piece, pq_file, column_names, shuffle_row_drop_range)
 
-        return [utils.decode_row(row, self._schema) for row in all_rows]
+        return all_rows #[utils.decode_row(row, self._schema) for row in all_rows]
 
     def _load_rows_with_predicate(self, pq_file, piece, worker_predicate, shuffle_row_drop_partition):
         """Loads all rows that match a predicate from a piece"""
@@ -186,7 +186,7 @@ class ReaderWorker(WorkerBase):
             open_file_func=lambda _: pq_file,
             columns=column_names,
             partitions=self._dataset.partitions
-        ).to_pandas()
+        ) #.to_pandas()
 
         num_rows = len(data_frame)
         num_partitions = shuffle_row_drop_partition[1]
@@ -201,5 +201,5 @@ class ReaderWorker(WorkerBase):
                 next_partition_to_add = next_partition_indexes[0][0:self._ngram.length - 1]
                 partition_indexes[next_partition_to_add] = this_partition
 
-        selected_dataframe = data_frame.loc[partition_indexes == this_partition]
-        return selected_dataframe.to_dict('records')
+        selected_dataframe = data_frame # .loc[partition_indexes == this_partition]
+        return selected_dataframe # .to_dict('records')

@@ -27,6 +27,8 @@ from petastorm.etl import dataset_metadata, rowgroup_indexing
 from petastorm.fs_utils import FilesystemResolver
 from petastorm.ngram import NGram
 from petastorm.predicates import PredicateBase
+from petastorm.pyarrow_helpers.batcher import BatchBuffer
+from petastorm.pyarrow_helpers.numpy import table_to_dict_of_numpy
 from petastorm.reader_impl.reader_v2 import ReaderV2
 from petastorm.reader_worker import ReaderWorker
 from petastorm.selectors import RowGroupSelectorBase
@@ -52,7 +54,7 @@ class Reader(object):
 
     def __init__(self, dataset_url, schema_fields=None, shuffle=None, predicate=None, rowgroup_selector=None,
                  reader_pool=None, num_epochs=1, sequence=None, training_partition=None, num_training_partitions=None,
-                 read_timeout_s=None, cache=None, shuffle_options=None, pyarrow_filesystem=None):
+                 read_timeout_s=None, cache=None, shuffle_options=None, pyarrow_filesystem=None, batch_size=1):
         """Initializes a reader object.
 
         :param dataset_url: an filepath or a url to a parquet directory,
@@ -163,7 +165,7 @@ class Reader(object):
         self.last_row_consumed = False
 
         # _result
-        self._result_buffer = []
+        self._result_buffer = BatchBuffer(batch_size)
 
     def _filter_row_groups(self, dataset, row_groups, predicate, rowgroup_selector, training_partition,
                            num_training_partitions):
@@ -328,28 +330,58 @@ class Reader(object):
         try:
             # We are receiving decoded rows from the worker in chunks. We store the list internally
             # and return a single item upon each consequent call to __next__
-            if not self._result_buffer:
+            if not self._result_buffer.has_next_batch():
+                self._result_buffer.add_table(self._workers_pool.get_results(timeout=self._read_timeout_s))
                 # Reverse order, so we can pop from the end of the list in O(1) while maintaining
                 # order the items are returned from the worker
-                rows_as_dict = list(reversed(self._workers_pool.get_results(timeout=self._read_timeout_s)))
+                # rows_as_dict = list(reversed(self._workers_pool.get_results(timeout=self._read_timeout_s)))
+                #
+                # if self.ngram:
+                #     for ngram_row in rows_as_dict:
+                #         for timestamp in ngram_row.keys():
+                #             row = ngram_row[timestamp]
+                #             schema_at_timestamp = self.ngram.get_schema_at_timestep(self.schema, timestamp)
+                #
+                #             ngram_row[timestamp] = schema_at_timestamp.make_namedtuple(**row)
+                #     self._result_buffer = rows_as_dict
+                # else:
+                #     self._result_buffer = [self.schema.make_namedtuple(**row) for row in rows_as_dict]
 
-                if self.ngram:
-                    for ngram_row in rows_as_dict:
-                        for timestamp in ngram_row.keys():
-                            row = ngram_row[timestamp]
-                            schema_at_timestamp = self.ngram.get_schema_at_timestep(self.schema, timestamp)
+            next_batch = self._result_buffer.next_batch()
+            batch_as_dict_of_numpy = table_to_dict_of_numpy(next_batch)
+            batch_as_named_tuple = self.schema.make_namedtuple(**batch_as_dict_of_numpy)
 
-                            ngram_row[timestamp] = schema_at_timestamp.make_namedtuple(**row)
-                    self._result_buffer = rows_as_dict
-                else:
-                    self._result_buffer = [self.schema.make_namedtuple(**row) for row in rows_as_dict]
-
-            return self._result_buffer.pop()
+            return batch_as_named_tuple
 
         except EmptyResultError:
             self.last_row_consumed = True
             raise StopIteration
 
+    # def __next__(self):
+    #     try:
+    #         # We are receiving decoded rows from the worker in chunks. We store the list internally
+    #         # and return a single item upon each consequent call to __next__
+    #         if not self._result_buffer:
+    #             # Reverse order, so we can pop from the end of the list in O(1) while maintaining
+    #             # order the items are returned from the worker
+    #             rows_as_dict = list(reversed(self._workers_pool.get_results(timeout=self._read_timeout_s)))
+    #
+    #             if self.ngram:
+    #                 for ngram_row in rows_as_dict:
+    #                     for timestamp in ngram_row.keys():
+    #                         row = ngram_row[timestamp]
+    #                         schema_at_timestamp = self.ngram.get_schema_at_timestep(self.schema, timestamp)
+    #
+    #                         ngram_row[timestamp] = schema_at_timestamp.make_namedtuple(**row)
+    #                 self._result_buffer = rows_as_dict
+    #             else:
+    #                 self._result_buffer = [self.schema.make_namedtuple(**row) for row in rows_as_dict]
+    #
+    #         return self._result_buffer.pop()
+    #
+    #     except EmptyResultError:
+    #         self.last_row_consumed = True
+    #         raise StopIteration
     def next(self):
         return self.__next__()
 
