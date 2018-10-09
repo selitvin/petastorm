@@ -46,13 +46,13 @@ jobs:
           name: run tests
           command: |
             . venv/bin/activate
-            flake8 . --count --show-source --statistics
-            flake8 . --count --exit-zero --max-complexity=10 --statistics
-            pylint --rcfile=.pylintrc petastorm examples -f parseable -r n
-            (cd docs/autodoc && make html)
-            pytest --timeout=180 --duration=0 -v examples/mnist/tests/test_pytorch_mnist.py --cov=./ --cov-append
-            pytest --timeout=180 --duration=0 -Y --cache-clear -m "not forked" -v --cov=./  --cov-append --trace-config --ignore=examples/mnist/tests/test_pytorch_mnist.py --ignore=petastorm/tests/test_pytorch_utils.py petastorm examples
-            pytest --timeout=180 --duration=0 -Y -m "forked" --forked -v --cov=./ --cov-append --trace-config --ignore=examples/mnist/tests/test_pytorch_mnist.py --ignore=petastorm/tests/test_pytorch_utils.py petastorm examples
+#            flake8 . --count --show-source --statistics
+#            flake8 . --count --exit-zero --max-complexity=10 --statistics
+#            pylint --rcfile=.pylintrc petastorm examples -f parseable -r n
+#            (cd docs/autodoc && make html)
+#            pytest --timeout=180 --duration=0 -v examples/mnist/tests/test_pytorch_mnist.py --cov=./ --cov-append
+#            pytest --timeout=180 --duration=0 -Y --cache-clear -m "not forked" -v --cov=./  --cov-append --trace-config --ignore=examples/mnist/tests/test_pytorch_mnist.py --ignore=petastorm/tests/test_pytorch_utils.py petastorm examples
+#            pytest --timeout=180 --duration=0 -Y -m "forked" --forked -v --cov=./ --cov-append --trace-config --ignore=examples/mnist/tests/test_pytorch_mnist.py --ignore=petastorm/tests/test_pytorch_utils.py petastorm examples
 
 #      - store_artifacts:
 #          path: test-reports
