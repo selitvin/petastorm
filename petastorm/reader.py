@@ -166,6 +166,7 @@ class Reader(object):
 
         # _result
         self._result_buffer = BatchBuffer(batch_size)
+        self.batch_size = batch_size
 
     def _filter_row_groups(self, dataset, row_groups, predicate, rowgroup_selector, training_partition,
                            num_training_partitions):

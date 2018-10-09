@@ -164,15 +164,19 @@ def make_namedtuple_tf_ngram(unischema, ngram, *args, **kargs):
     return ngram_result
 
 
-def _set_shape(schema, fields_as_dict):
+def _set_shape(schema, fields_as_dict, batch_size=None):
     # Assign static shape for all tensors
     # Workaround of an issue described here:
     # https://stackoverflow.com/questions/49161316/trailing-x00-characters-in-tensor-when-numpy-string-array-is-returned-from-tf
     for k in fields_as_dict.keys():
         unischema_field = schema.fields[k]
 
+        if batch_size:
+            shape = (batch_size,) + unischema_field.shape
+        else:
+            shape = unischema_field.shape
         # Set static shape
-        fields_as_dict[k].set_shape(unischema_field.shape)
+        fields_as_dict[k].set_shape(shape)
 
         # Workaround trailing null characters
         if unischema_field.numpy_dtype == np.string_ and len(fields_as_dict[k].get_shape()) == 1:
@@ -226,7 +230,7 @@ def _tf_tensors_nonngram(reader, shuffling_queue_capacity, min_after_dequeue):
     fields_as_dict = reader.schema.make_namedtuple_tf(*fields_as_list)._asdict()
 
     # Force all static shapes to be set in the returned value based on the unischema
-    _set_shape(reader.schema, fields_as_dict)
+    _set_shape(reader.schema, fields_as_dict, reader.batch_size)
 
     # Make a row tensor into a nice named tuple
     return reader.schema.make_namedtuple_tf(**fields_as_dict)
@@ -312,10 +316,10 @@ def tf_tensors(reader, shuffling_queue_capacity=0, min_after_dequeue=0):
     return result
 
 
-def _set_shape_to_named_tuple(schema, fields):
+def _set_shape_to_named_tuple(schema, fields, batch_size):
     """Assign static shape for all tensors"""
     fields_as_dict = fields._asdict()
-    _set_shape(schema, fields_as_dict)
+    _set_shape(schema, fields_as_dict, batch_size)
     return schema.make_namedtuple_tf(**fields_as_dict)
 
 
@@ -369,7 +373,7 @@ def make_petastorm_dataset(reader):
         flat_dataset = tf.data.Dataset.from_generator(dequeue_sample_impl, tuple(_schema_to_tf_dtypes(reader.schema)))
         named_tuple_dataset = flat_dataset \
             .map(reader.schema.make_namedtuple_tf) \
-            .map(lambda row: _set_shape_to_named_tuple(reader.schema, row))
+            .map(lambda row: _set_shape_to_named_tuple(reader.schema, row, reader.batch_size))
         return named_tuple_dataset
     else:
         raise NotImplementedError('make_petastorm_dataset does not support NGram yet.')
