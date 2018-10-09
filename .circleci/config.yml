@@ -46,7 +46,7 @@ jobs:
           name: run tests
           command: |
             . venv/bin/activate
-#            flake8 . --count --show-source --statistics
+            flake8 . --count --show-source --statistics
 #            flake8 . --count --exit-zero --max-complexity=10 --statistics
 #            pylint --rcfile=.pylintrc petastorm examples -f parseable -r n
 #            (cd docs/autodoc && make html)
