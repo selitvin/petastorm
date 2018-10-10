@@ -20,11 +20,12 @@ from __future__ import print_function
 from petastorm.reader import Reader
 
 
-def python_hello_world(dataset_url='file:///tmp/hello_world_dataset'):
+def python_hello_world(dataset_url='file:///home/yevgeni/temp/trueta_tf2_10/'):
     with Reader(dataset_url) as reader:
         # Pure python
         for sample in reader:
-            print(sample.id)
+            print(sample)
+            # print(sample.id)
             # plt.imshow(sample.image1)
 
 

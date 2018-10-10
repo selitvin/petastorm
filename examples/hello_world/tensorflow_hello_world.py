@@ -23,22 +23,32 @@ from petastorm.reader import Reader
 from petastorm.tf_utils import tf_tensors, make_petastorm_dataset
 
 
-def tensorflow_hello_world(dataset_url='file:///tmp/hello_world_dataset'):
+def tensorflow_hello_world(dataset_url='file:///home/yevgeni/temp/trueta_tf2_10/'):
     # Example: tf_tensors will return tensors with dataset data
-    with Reader(dataset_url) as reader:
-        tensor = tf_tensors(reader)
-        with tf.Session() as sess:
-            sample = sess.run(tensor)
-            print(sample.id)
+    # with Reader(dataset_url, batch_size=10) as reader:
+    #     tensor = tf_tensors(reader)
+    #     with tf.Session() as sess:
+    #         sample = sess.run(tensor)
+            # print(sample.id)
 
     # Example: use tf.data.Dataset API
-    with Reader(dataset_url) as reader:
+    batch_size = 100
+    with Reader(dataset_url, batch_size=batch_size) as reader:
         dataset = make_petastorm_dataset(reader)
         iterator = dataset.make_one_shot_iterator()
         tensor = iterator.get_next()
         with tf.Session() as sess:
-            sample = sess.run(tensor)
-            print(sample.id)
+            count = 0
+            while True:
+                sample = next(reader) #sess.run(tensor)
+                count += batch_size
+                x = sample._asdict()
+                for k, v in x.items():
+                    if v.shape[0] != batch_size:
+                        print(k, v.shape)
+                print(count)
+                # print
+
 
 
 if __name__ == '__main__':
