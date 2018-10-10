@@ -20,7 +20,7 @@ class BatchBuffer(object):
             self.add_record_batch(record_batch)
 
     def has_next_batch(self):
-        return self._head_idx + self._batch_size < self._cumulative_len
+        return self._head_idx + self._batch_size <= self._cumulative_len
 
     def next_batch(self):
 
@@ -32,7 +32,7 @@ class BatchBuffer(object):
         result_rows = 0
         while result_rows < bs and self._cumulative_len > 0:
             head = self._buffer[0]
-            piece = head[self._head_idx:self._head_idx + self._batch_size]
+            piece = head[self._head_idx:self._head_idx + self._batch_size - result_rows]
             self._head_idx += piece.num_rows
             result_rows += piece.num_rows
             result.append(piece)
