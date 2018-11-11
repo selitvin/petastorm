@@ -105,3 +105,9 @@ def test_time_measure():
     assert result.time_mean >= T / 2.0
     assert result.samples_per_second < 1.0 / T
     assert result.memory_info
+
+def test_pure_python_thread_pool_run_arrow_tables(synthetic_dataset):
+    # Use a regex to match field name ('i.' instead of 'id')
+    reader_throughput(synthetic_dataset.url, warmup_cycles_count=5, measure_cycles_count=5,
+                      pool_type=WorkerPoolType.THREAD, loaders_count=1, read_method=ReadMethod.PYTHON,
+                      reader_extra_args={'use_arrow_tables': True})

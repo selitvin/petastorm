@@ -20,16 +20,23 @@ from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
 import six
 from pyarrow import parquet as pq
 
+from petastorm.arrow_reader_worker import ArrowReaderWorker
 from petastorm.cache import NullCache
 from petastorm.etl import dataset_metadata, rowgroup_indexing
 from petastorm.fs_utils import FilesystemResolver
+from petastorm.local_disk_arrow_table_cache import LocalDiskArrowTableCache
 from petastorm.local_disk_cache import LocalDiskCache
 from petastorm.ngram import NGram
 from petastorm.predicates import PredicateBase
+from petastorm.py_dict_reader_worker import PyDictReaderWorker
+from petastorm.pyarrow_helpers.batching_table_queue import BatchingTableQueue
+from petastorm.pyarrow_helpers.numpy_conversion import batch_table_to_dict_of_numpy, table_to_dict_of_numpy
+from petastorm.reader_impl.arrow_table_serializer import ArrowTableSerializer
+from petastorm.reader_impl.pickle_serializer import PickleSerializer
+from petastorm.reader_impl.pyarrow_serializer import PyArrowSerializer
 from petastorm.reader_impl.reader_v2 import ReaderV2
 from petastorm.reader_impl.same_thread_executor import SameThreadExecutor
 from petastorm.reader_impl.shuffling_buffer import NoopShufflingBuffer, RandomShufflingBuffer
-from petastorm.reader_worker import ReaderWorker
 from petastorm.selectors import RowGroupSelectorBase
 from petastorm.unischema import Unischema
 from petastorm.workers_pool import EmptyResultError
@@ -60,7 +67,7 @@ def make_reader(dataset_url,
                 cache_row_size_estimate=None, cache_extra_settings=None,
                 hdfs_driver='libhdfs3',
                 infer_schema=False,
-                reader_engine='reader_v1', reader_engine_params=None):
+                reader_engine='reader_v1', reader_engine_params=None, batch_size=None, use_arrow_tables=False):
     """
     Factory convenience method for :class:`Reader`.
 
@@ -108,6 +115,7 @@ def make_reader(dataset_url,
     :param reader_engine_params: For advanced usage: a dictionary with arguments passed directly to a reader
         implementation constructor chosen by ``reader_engine`` argument.  You should not use this parameter, unless you
         fine-tuning of a reader.
+    :param batch_size: TODO(yevgeni) documentation
     :return: A :class:`Reader` object
     """
 
@@ -119,12 +127,18 @@ def make_reader(dataset_url,
 
     resolver = FilesystemResolver(dataset_url, hdfs_driver=hdfs_driver)
     filesystem = resolver.filesystem()
-    dataset_path = resolver.get_dataset_path()
+
+    dataset_path = resolver.parsed_dataset_url().path
 
     if cache_type is None or cache_type == 'null':
         cache = NullCache()
     elif cache_type == 'local-disk':
-        cache = LocalDiskCache(cache_location, cache_size_limit, cache_row_size_estimate, **cache_extra_settings or {})
+        if use_arrow_tables:
+            cache = LocalDiskArrowTableCache(cache_location, cache_size_limit, cache_row_size_estimate,
+                                             **cache_extra_settings or {})
+        else:
+            cache = LocalDiskCache(cache_location, cache_size_limit, cache_row_size_estimate,
+                                   **cache_extra_settings or {})
     else:
         raise ValueError('Unknown cache_type: {}'.format(cache_type))
 
@@ -132,7 +146,13 @@ def make_reader(dataset_url,
         if reader_pool_type == 'thread':
             reader_pool = ThreadPool(workers_count)
         elif reader_pool_type == 'process':
-            reader_pool = ProcessPool(workers_count, pyarrow_serialize=pyarrow_serialize)
+            if use_arrow_tables:
+                serializer = ArrowTableSerializer()
+            elif pyarrow_serialize:
+                serializer = PyArrowSerializer()
+            else:
+                serializer = PickleSerializer()
+            reader_pool = ProcessPool(workers_count, serializer)
         elif reader_pool_type == 'dummy':
             reader_pool = DummyPool()
         else:
@@ -156,7 +176,20 @@ def make_reader(dataset_url,
         if reader_engine_params:
             kwargs.update(reader_engine_params)
 
-        return Reader(filesystem, dataset_path, **kwargs)
+        if use_arrow_tables:
+            return Reader(filesystem, dataset_path,
+                          worker_class=ArrowReaderWorker,
+                          results_queue_reader=ArrowReaderWorkerResultsQueueReader(batch_size),
+                          batch_size=batch_size,
+                          **kwargs)
+        else:
+            assert batch_size is None, 'batch_size is currently not supported with use_arrow_tables=False'
+
+            return Reader(filesystem, dataset_path,
+                          worker_class=PyDictReaderWorker,
+                          results_queue_reader=PyDictReaderWorkerResultsQueueReader(),
+                          **kwargs)
+
     elif reader_engine == 'experimental_reader_v2':
         if reader_pool_type == 'thread':
             decoder_pool = ThreadPoolExecutor(workers_count)
@@ -207,7 +240,8 @@ class Reader(object):
     def __init__(self, pyarrow_filesystem, dataset_path, schema_fields=None,
                  shuffle_row_groups=True, shuffle_row_drop_partitions=1,
                  predicate=None, rowgroup_selector=None, reader_pool=None, num_epochs=1,
-                 cur_shard=None, shard_count=None, cache=None, infer_schema=False):
+                 cur_shard=None, shard_count=None, cache=None, infer_schema=False,
+                 results_queue_reader=None, worker_class=None, batch_size=None):
         """Initializes a reader object.
 
         :param pyarrow_filesystem: An instance of ``pyarrow.FileSystem`` that will be used. If not specified,
@@ -258,6 +292,11 @@ class Reader(object):
             object.""")
 
         self.ngram = schema_fields if isinstance(schema_fields, NGram) else None
+        self.batch_size = batch_size
+
+        # By default, use original method of working with list of dictionaries and not arrow tables
+        worker_class = worker_class or PyDictReaderWorker
+        self._results_queue_reader = results_queue_reader or PyDictReaderWorkerResultsQueueReader()
 
         if self.ngram and not self.ngram.timestamp_overlap and shuffle_row_drop_partitions > 1:
             raise NotImplementedError('Using timestamp_overlap=False is not implemented with'
@@ -299,15 +338,12 @@ class Reader(object):
                                              self._workers_pool.workers_count + _VENTILATE_EXTRA_ROWGROUPS)
 
         # 5. Start workers pool
-        self._workers_pool.start(ReaderWorker,
+        self._workers_pool.start(worker_class,
                                  (pyarrow_filesystem, dataset_path, self.schema, self.ngram, row_groups, cache),
                                  ventilator=ventilator)
         logger.debug('Workers pool started')
 
         self.last_row_consumed = False
-
-        # _result
-        self._result_buffer = []
 
     def _filter_row_groups(self, dataset, row_groups, predicate, rowgroup_selector, cur_shard,
                            shard_count):
@@ -458,29 +494,10 @@ class Reader(object):
 
     def __next__(self):
         try:
-            # We are receiving decoded rows from the worker in chunks. We store the list internally
-            # and return a single item upon each consequent call to __next__
-            if not self._result_buffer:
-                # Reverse order, so we can pop from the end of the list in O(1) while maintaining
-                # order the items are returned from the worker
-                rows_as_dict = list(reversed(self._workers_pool.get_results()))
-
-                if self.ngram:
-                    for ngram_row in rows_as_dict:
-                        for timestamp in ngram_row.keys():
-                            row = ngram_row[timestamp]
-                            schema_at_timestamp = self.ngram.get_schema_at_timestep(self.schema, timestamp)
-
-                            ngram_row[timestamp] = schema_at_timestamp.make_namedtuple(**row)
-                    self._result_buffer = rows_as_dict
-                else:
-                    self._result_buffer = [self.schema.make_namedtuple(**row) for row in rows_as_dict]
-
-            return self._result_buffer.pop()
-
-        except EmptyResultError:
+            return self._results_queue_reader.read_next(self._workers_pool, self.schema, self.ngram)
+        except StopIteration:
             self.last_row_consumed = True
-            raise StopIteration
+            raise
 
     def next(self):
         return self.__next__()
@@ -492,3 +509,59 @@ class Reader(object):
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.stop()
         self.join()
+
+
+class PyDictReaderWorkerResultsQueueReader(object):
+    def __init__(self):
+        self._result_buffer = []
+
+    def read_next(self, workers_pool, schema, ngram):
+        try:
+            # We are receiving decoded rows from the worker in chunks. We store the list internally
+            # and return a single item upon each consequent call to __next__
+            if not self._result_buffer:
+                # Reverse order, so we can pop from the end of the list in O(1) while maintaining
+                # order the items are returned from the worker
+                rows_as_dict = list(reversed(workers_pool.get_results()))
+
+                if ngram:
+                    for ngram_row in rows_as_dict:
+                        for timestamp in ngram_row.keys():
+                            row = ngram_row[timestamp]
+                            schema_at_timestamp = ngram.get_schema_at_timestep(schema, timestamp)
+
+                            ngram_row[timestamp] = schema_at_timestamp.make_namedtuple(**row)
+                    self._result_buffer = rows_as_dict
+                else:
+                    self._result_buffer = [schema.make_namedtuple(**row) for row in rows_as_dict]
+
+            return self._result_buffer.pop()
+
+        except EmptyResultError:
+            raise StopIteration
+
+
+class ArrowReaderWorkerResultsQueueReader(object):
+    def __init__(self, batch_size):
+        self._result_buffer = BatchingTableQueue(batch_size or 1)
+
+    def read_next(self, workers_pool, schema, ngram):
+        try:
+            assert not ngram, 'ArrowReader does not support ngrams for now'
+
+            # We are receiving decoded rows from the worker in chunks. We store the list internally
+            # and return a single item upon each consequent call to __next__
+            if self._result_buffer.empty():
+                self._result_buffer.put(workers_pool.get_results())
+
+            next_batch = self._result_buffer.get()
+            if next_batch.num_rows > 1:
+                result_as_numpy = batch_table_to_dict_of_numpy(next_batch, schema)
+            else:
+                result_as_numpy = table_to_dict_of_numpy(next_batch, schema)
+            batch_as_named_tuple = schema.make_namedtuple(**result_as_numpy)
+
+            return batch_as_named_tuple
+
+        except EmptyResultError:
+            raise StopIteration

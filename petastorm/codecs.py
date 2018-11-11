@@ -20,11 +20,15 @@ transitively to parquet files.
 NOTE: Due to the way unischema is stored alongside dataset (with pickling), changing any of these codecs class names
 and fields can result in reader breakages.
 """
+
 from abc import abstractmethod
 from io import BytesIO
 
+import pyarrow as pa
+
 try:
     import cv2
+
     OPENCV_AVAILABLE = True
 except ImportError:
     OPENCV_AVAILABLE = False
@@ -32,6 +36,8 @@ except ImportError:
 import numpy as np
 from pyspark.sql.types import BinaryType, LongType, IntegerType, ShortType, ByteType, StringType, \
     FloatType, DoubleType, BooleanType
+
+from petastorm.pyarrow_helpers.numpy_conversion import get_pyarrow_type_from_numpy
 
 
 class DataframeColumnCodec(object):
@@ -43,6 +49,18 @@ class DataframeColumnCodec(object):
 
     @abstractmethod
     def decode(self, unischema_field, value):
+        raise RuntimeError('Abstract method was called')
+
+    @abstractmethod
+    def arrow_column_to_numpy_batch(self, unischema_field, column):
+        raise RuntimeError('Abstract method was called')
+
+    @abstractmethod
+    def arrow_value_to_numpy(self, unischema_field, value):
+        raise RuntimeError('Abstract method was called')
+
+    @abstractmethod
+    def decode_column(self, unischema_field, column):
         raise RuntimeError('Abstract method was called')
 
     @abstractmethod
@@ -100,11 +118,61 @@ class CompressedImageCodec(DataframeColumnCodec):
             return image_bgr_or_gray
         elif len(image_bgr_or_gray.shape) == 3 and image_bgr_or_gray.shape[2] == 3:
             # Convert BGR to RGB (opencv assumes BGR)
-            image_rgb = image_bgr_or_gray[:, :, (2, 1, 0)]
+            # image_rgb = image_bgr_or_gray[:, :, (2, 1, 0)]
+
+            image_rgb = cv2.cvtColor(image_bgr_or_gray, cv2.COLOR_BGR2RGB)
+
             return image_rgb
         else:
             raise ValueError('Unexpected image dimensions. Supported dimensions are (H, W) or (H, W, 3). '
                              'Got {}'.format(image_bgr_or_gray.shape))
+
+    # def arrow_column_to_numpy_batch(self, unischema_field, column):
+    #     if None in unischema_field.shape:
+    #         raise RuntimeError('%s has an unknown dimension in its shape %s. Can not batch. ',
+    #                            unischema_field.name, unischema_field.shape)
+    #
+    #     numpy_result = np.empty(shape=(len(column),) + unischema_field.shape, dtype=unischema_field.numpy_dtype)
+    #     for row_index, data in enumerate(column):
+    #         numpy_result[row_index, ...] = np.array(data.as_py(), dtype=unischema_field.numpy_dtype).reshape(
+    #             unischema_field.shape)
+    #     return numpy_result
+    #
+    # def arrow_value_to_numpy(self, unischema_field, value):
+    #     shape = [d if d else -1 for d in unischema_field.shape]
+    #     cell = np.array(value.as_py(), dtype=unischema_field.numpy_dtype).reshape(shape)
+    #     return cell
+
+    def arrow_column_to_numpy_batch(self, unischema_field, column):
+        # TODO(yevgeni): ARROW-3592 introduced a way to save as_py and avoid memory copy. Available in arrow 0.12.0
+        buffer = column.as_py()
+        reader = pa.BufferReader(memoryview(buffer))
+        tensor = pa.read_tensor(reader)
+        return tensor.to_numpy()
+
+    def arrow_value_to_numpy(self, unischema_field, value):
+        buffer = value.as_py()
+        reader = pa.BufferReader(memoryview(buffer))
+        tensor = pa.read_tensor(reader)
+        return tensor.to_numpy()
+
+
+    def decode_column(self, unischema_field, column):
+        rows = []
+        for row in column.data:
+            row_as_py = row.as_py()
+            if row_as_py:
+                tensor = pa.Tensor.from_numpy(self.decode(unischema_field, row_as_py))
+                buffer = pa.allocate_buffer(pa.get_tensor_size(tensor))
+                stream = pa.FixedSizeBufferWriter(buffer)
+                pa.write_tensor(tensor, stream)
+                rows.append(buffer.to_pybytes())
+            else:
+                rows.append(None)
+
+        decoded_array = pa.array(rows, pa.binary())
+        output_column = pa.Column.from_array(column.name, [decoded_array])
+        return output_column
 
     def spark_dtype(self):
         return BinaryType()
@@ -136,6 +204,36 @@ class NdarrayCodec(DataframeColumnCodec):
         memfile = BytesIO(value)
         return np.load(memfile)
 
+    def arrow_column_to_numpy_batch(self, unischema_field, column):
+        if None in unischema_field.shape:
+            raise RuntimeError('%s has an unknown dimension in its shape %s. Can not batch. ',
+                               unischema_field.name, unischema_field.shape)
+
+        numpy_result = np.empty(shape=(len(column),) + unischema_field.shape, dtype=unischema_field.numpy_dtype)
+        for row_index, data in enumerate(column):
+            numpy_result[row_index, ...] = np.array(data.as_py(), dtype=unischema_field.numpy_dtype).reshape(
+                unischema_field.shape)
+
+        # shape = [d if d else -1 for d in unischema_field.shape]
+        # cell = np.array(column.as_py(), dtype=unischema_field.numpy_dtype).reshape(shape)
+        return numpy_result
+
+    def arrow_value_to_numpy(self, unischema_field, value):
+        shape = [d if d else -1 for d in unischema_field.shape]
+        cell = np.array(value.as_py(), dtype=unischema_field.numpy_dtype).reshape(shape)
+        return cell
+
+    def decode_column(self, unischema_field, column):
+        rows = []
+        for row in column.data:
+            decoded_image = self.decode(unischema_field, row.as_py()).flatten() if row is not pa.NULL else None
+            rows.append(decoded_image)
+
+        decoded_array = pa.array(rows, type=pa.list_(
+            get_pyarrow_type_from_numpy(unischema_field.numpy_dtype)))  # TODO: fix the tpye
+        output_column = pa.Column.from_array(column.name, [decoded_array])
+        return output_column
+
     def spark_dtype(self):
         return BinaryType()
 
@@ -165,6 +263,9 @@ class CompressedNdarrayCodec(DataframeColumnCodec):
     def decode(self, unischema_field, value):
         memfile = BytesIO(value)
         return np.load(memfile)['arr']
+
+    def decode_column(self, unischema_field, column):
+        return column
 
     def spark_dtype(self):
         return BinaryType()
@@ -200,6 +301,16 @@ class ScalarCodec(DataframeColumnCodec):
         # choose to resurrect Decimals support in the future.
         return unischema_field.numpy_dtype(value)
 
+    def decode_column(self, unischema_field, column):
+        return column
+
+    def arrow_column_to_numpy_batch(self, unischema_field, column):
+        # to_pylist(): extra copy?
+        return np.asarray(column.to_pylist(), dtype=unischema_field.numpy_dtype)
+
+    def arrow_value_to_numpy(self, unischema_field, value):
+        return unischema_field.numpy_dtype(value.as_py())
+
     def spark_dtype(self):
         return self._spark_type
 
@@ -225,3 +336,52 @@ def _is_compliant_shape(a, b):
             if a[i] != b[i]:
                 return False
     return True
+
+
+class ArrowTensorCodec(DataframeColumnCodec):
+    """Encodes numpy ndarray into, or decodes an ndarray from, a spark dataframe field."""
+
+    def encode(self, unischema_field, array):
+        expected_dtype = unischema_field.numpy_dtype
+        if isinstance(array, np.ndarray):
+            if expected_dtype != array.dtype.type:
+                raise ValueError('Unexpected type of {} feature. '
+                                 'Expected {}. Got {}'.format(unischema_field.name, expected_dtype, array.dtype))
+
+            expected_shape = unischema_field.shape
+            if not _is_compliant_shape(array.shape, expected_shape):
+                raise ValueError('Unexpected dimensions of {} feature. '
+                                 'Expected {}. Got {}'.format(unischema_field.name, expected_shape, array.shape))
+        else:
+            raise ValueError('Unexpected type of {} feature. '
+                             'Expected ndarray of {}. Got {}'.format(unischema_field.name, expected_dtype, type(array)))
+
+        tensor = pa.Tensor.from_numpy(array)
+        buffer = pa.allocate_buffer(pa.get_tensor_size(tensor))
+        stream = pa.FixedSizeBufferWriter(buffer)
+        pa.write_tensor(tensor, stream)
+        return bytearray(buffer)
+
+    def decode(self, unischema_field, value):
+        reader = pa.BufferReader(value)
+        tensor = pa.read_tensor(reader)
+        return tensor.to_numpy()
+
+    def arrow_column_to_numpy_batch(self, unischema_field, column):
+        # TODO(yevgeni): ARROW-3592 introduced a way to save as_py and avoid memory copy. Available in arrow 0.12.0
+        buffer = column.as_py()
+        reader = pa.BufferReader(memoryview(buffer))
+        tensor = pa.read_tensor(reader)
+        return tensor.to_numpy()
+
+    def arrow_value_to_numpy(self, unischema_field, value):
+        buffer = value.as_py()
+        reader = pa.BufferReader(memoryview(buffer))
+        tensor = pa.read_tensor(reader)
+        return tensor.to_numpy()
+
+    def decode_column(self, unischema_field, column):
+        return column
+
+    def spark_dtype(self):
+        return BinaryType()

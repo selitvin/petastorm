@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import io
+import pickle
 from decimal import Decimal
 
 import numpy as np
@@ -19,7 +20,7 @@ import pytest
 from PIL import Image
 from pyspark.sql.types import StringType, ByteType, ShortType, IntegerType, LongType, DecimalType
 
-from petastorm.codecs import NdarrayCodec, CompressedNdarrayCodec, ScalarCodec, CompressedImageCodec
+from petastorm.codecs import NdarrayCodec, CompressedNdarrayCodec, ScalarCodec, CompressedImageCodec, ArrowTensorCodec
 from petastorm.unischema import UnischemaField
 
 NUMERIC_DTYPES = [np.uint8, np.int8, np.uint16, np.int16, np.uint32, np.int32, np.uint64, np.int64, np.float32,
@@ -173,6 +174,16 @@ def test_invalid_image_size():
 
     with pytest.raises(ValueError):
         codec.encode(field, np.zeros((10, 10, 2), dtype=np.uint8))
+
+
+def test_arrow_tensor_codec():
+    codec = ArrowTensorCodec()
+    field = UnischemaField(name='field_image', numpy_dtype=np.float64, shape=(2, 3, 4), codec=codec,
+                           nullable=False)
+
+    expected = np.random.random((2, 3, 4)).astype(np.float64)
+    actual = codec.decode(field, pickle.loads(pickle.dumps(codec.encode(field, expected))))
+    np.testing.assert_array_equal(actual, expected)
 
     with pytest.raises(ValueError):
         codec.encode(field, np.zeros((10, 10, 10, 10), dtype=np.uint8))

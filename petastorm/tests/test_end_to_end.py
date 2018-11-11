@@ -37,20 +37,31 @@ from petastorm.unischema import UnischemaField, Unischema
 MINIMAL_READER_FLAVOR_FACTORIES = [
     lambda url, **kwargs: make_reader(url, reader_pool_type='dummy', **kwargs),
     lambda url, **kwargs: make_reader(url, reader_engine='experimental_reader_v2', **kwargs),
+    lambda url, **kwargs: make_reader(url, reader_pool_type='dummy', use_arrow_tables=True, **kwargs),
 ]
 
 # pylint: disable=unnecessary-lambda
 ALL_READER_FLAVOR_FACTORIES = MINIMAL_READER_FLAVOR_FACTORIES + [
     lambda url, **kwargs: make_reader(url, reader_pool_type='thread', **kwargs),
     lambda url, **kwargs: make_reader(url, reader_pool_type='process', workers_count=2, **kwargs),
-    lambda url, **kwargs: make_reader(url, workers_count=2, reader_engine='experimental_reader_v2', **kwargs)
+    lambda url, **kwargs: make_reader(url, workers_count=2, reader_engine='experimental_reader_v2', **kwargs),
+    lambda url, **kwargs: make_reader(url, reader_pool_type='process', workers_count=2, **kwargs),
+    lambda url, **kwargs: make_reader(url, workers_count=2, reader_engine='experimental_reader_v2', **kwargs),
+    lambda url, **kwargs: make_reader(url, reader_pool_type='process', workers_count=2, use_arrow_tables=True,
+                                      **kwargs),
 ]
 
 
 def _check_simple_reader(reader, expected_data, expected_rows_count=None, check_types=True):
     # Read a bunch of entries from the dataset and compare the data to reference
     def _type(v):
-        return v.dtype if isinstance(v, np.ndarray) else type(v)
+        if isinstance(v, np.ndarray):
+            if v.dtype.str.startswith('|S'):
+                return '|S'
+            else:
+                return v.dtype
+        else:
+            return type(v)
 
     expected_rows_count = expected_rows_count or len(expected_data)
     count = 0
@@ -79,6 +90,51 @@ def test_simple_read_with_pyarrow_serialize(synthetic_dataset):
     with make_reader(synthetic_dataset.url, reader_pool_type='process', workers_count=1,
                      pyarrow_serialize=True) as reader:
         _check_simple_reader(reader, synthetic_dataset.data, check_types=False)
+
+
+@pytest.mark.parametrize('reader_factory', [
+    lambda url, **kwargs: make_reader(url, reader_pool_type='dummy', use_arrow_tables=True, batch_size=10, **kwargs),
+])
+def test_read_in_batch(synthetic_dataset, reader_factory):
+    """Just a bunch of read and compares of all values to the expected values using the different reader pools"""
+
+    def _type(v):
+        return v.dtype if isinstance(v, np.ndarray) else type(v)
+
+    # TODO(yevgeni): add string batchable array
+    batchable_fields = [TestSchema.id, TestSchema.python_primitive_uint8,
+                        # TestSchema.partition_key,
+                        # TestSchema.image_png,
+                        TestSchema.matrix, TestSchema.decimal, TestSchema.matrix_uint16,
+                        # TestSchema.arrow_tensor_matrix
+                        ]
+
+    with reader_factory(synthetic_dataset.url, schema_fields=batchable_fields) as reader:
+        expected_rows_count = len(synthetic_dataset.data)
+        count = 0
+        for row in reader:
+            actual = row._asdict()
+            assert len(actual['id']) == 10
+            for i, id_value in enumerate(actual['id']):
+                expected = next(d for d in synthetic_dataset.data if d['id'] == id_value)
+                for field in batchable_fields:
+                    expected_value = expected[field.name]
+                    actual_value = actual[field.name][i, ...]
+                    np.testing.assert_equal(actual_value, expected_value)
+                    assert _type(actual_value) == _type(expected_value)
+
+                count += len(actual['id'])
+
+        # assert count == expected_rows_count
+
+
+@pytest.mark.parametrize('reader_factory', [
+    lambda url, **kwargs: make_reader(url, reader_pool_type='dummy', use_arrow_tables=True, batch_size=10, **kwargs),
+])
+def test_error_if_batching_field_with_unknown_dimension(synthetic_dataset, reader_factory):
+    with pytest.raises(RuntimeError, match='Can not batch'):
+        with reader_factory(synthetic_dataset.url, schema_fields=[TestSchema.string_array_nullable]) as reader:
+            next(reader)
 
 
 @pytest.mark.parametrize('reader_factory', ALL_READER_FLAVOR_FACTORIES)
@@ -300,22 +356,19 @@ def test_single_column_predicate(synthetic_dataset, reader_factory):
     """Test quering a single column with a predicate on the same column """
     with reader_factory(synthetic_dataset.url, schema_fields=[TestSchema.id], predicate=EqualPredicate({'id': 1})) \
             as reader:
-        # Read a bunch of entries from the dataset and compare the data to reference
-        for row in reader:
-            actual = dict(row._asdict())
-            expected = next(d for d in synthetic_dataset.data if d['id'] == actual['id'])
-            np.testing.assert_equal(expected['id'], actual['id'])
+        all_rows = list(reader)
+        assert 1 == len(all_rows)
+        assert 1 == all_rows[0].id
 
 
 @pytest.mark.parametrize('reader_factory', MINIMAL_READER_FLAVOR_FACTORIES)
 def test_two_column_predicate(synthetic_dataset, reader_factory):
-    """Test quering a single column with a predicate on multiple columns, one of them is a partitioning key"""
-    with reader_factory(synthetic_dataset.url, schema_fields=[TestSchema.id, TestSchema.id2, TestSchema.partition_key],
+    """Test quering a single column with a predicate on the same column """
+    with reader_factory(synthetic_dataset.url, schema_fields=[TestSchema.id2, TestSchema.partition_key],
                         predicate=EqualPredicate({'id2': 1, 'partition_key': 'p_2'})) as reader:
         all_rows = list(reader)
         all_id2 = np.array(list(map(operator.attrgetter('id2'), all_rows)))
         all_partition_key = np.array(list(map(operator.attrgetter('partition_key'), all_rows)))
-        assert len(all_rows) == 5
         assert (all_id2 == 1).all()
         assert (all_partition_key == 'p_2').all()
 

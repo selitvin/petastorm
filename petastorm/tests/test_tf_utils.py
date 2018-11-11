@@ -79,7 +79,8 @@ def test_schema_to_dtype_list():
     np.testing.assert_equal(actual_tf_dtype_list, [tf.string, tf.int32, tf.int32, tf.uint8])
 
 
-def _read_from_tf_tensors(synthetic_dataset, count, shuffling_queue_capacity, min_after_dequeue, ngram):
+def _read_from_tf_tensors(synthetic_dataset, count, shuffling_queue_capacity, min_after_dequeue, ngram,
+                          use_arrow_tables=False):
     """Used by several test cases. Reads a 'count' rows using reader.
 
     The reader is configured without row-group shuffling and guarantees deterministic order of rows up to the
@@ -93,7 +94,7 @@ def _read_from_tf_tensors(synthetic_dataset, count, shuffling_queue_capacity, mi
     schema_fields = (fields if ngram is None else ngram)
 
     reader = make_reader(schema_fields=schema_fields, dataset_url=synthetic_dataset.url, reader_pool_type='dummy',
-                         shuffle_row_groups=False)
+                         shuffle_row_groups=False, use_arrow_tables=use_arrow_tables)
 
     row_tensors = tf_tensors(reader, shuffling_queue_capacity=shuffling_queue_capacity,
                              min_after_dequeue=min_after_dequeue)
@@ -147,13 +148,14 @@ def _assert_expected_rows_data(synthetic_dataset, rows_data):
             else:
                 np.testing.assert_equal(expected_val, actual)
 
-
+@pytest.mark.parametrize('use_arrow_tables', [False, True])
 @pytest.mark.forked
-def test_simple_read_tensorflow(synthetic_dataset):
+def test_simple_read_tensorflow(synthetic_dataset, use_arrow_tables):
     """Read couple of rows. Make sure all tensors have static shape sizes assigned and the data matches reference
     data"""
     rows_data, row_tensors = \
-        _read_from_tf_tensors(synthetic_dataset, count=30, shuffling_queue_capacity=0, min_after_dequeue=0, ngram=None)
+        _read_from_tf_tensors(synthetic_dataset, count=30, shuffling_queue_capacity=0, min_after_dequeue=0, ngram=None,
+                              use_arrow_tables=use_arrow_tables)
 
     # Make sure we have static shape info for all fields
     _assert_all_tensors_have_shape(row_tensors)
@@ -161,13 +163,14 @@ def test_simple_read_tensorflow(synthetic_dataset):
 
 
 @pytest.mark.forked
-def test_shuffling_queue(synthetic_dataset):
+@pytest.mark.parametrize('use_arrow_tables', [False, True])
+def test_shuffling_queue(synthetic_dataset, use_arrow_tables):
     """Read data without tensorflow shuffling queue and with it. Check the the order is deterministic within
     unshuffled read and is random with shuffled read"""
     unshuffled_1, _ = _read_from_tf_tensors(synthetic_dataset, 30, shuffling_queue_capacity=0, min_after_dequeue=0,
-                                            ngram=None)
+                                            ngram=None, use_arrow_tables=use_arrow_tables)
     unshuffled_2, _ = _read_from_tf_tensors(synthetic_dataset, 30, shuffling_queue_capacity=0, min_after_dequeue=0,
-                                            ngram=None)
+                                            ngram=None, use_arrow_tables=use_arrow_tables)
 
     shuffled_1, shuffled_1_row_tensors = \
         _read_from_tf_tensors(synthetic_dataset, 30, shuffling_queue_capacity=10, min_after_dequeue=9, ngram=None)
@@ -216,6 +219,7 @@ def test_shuffling_queue_with_ngrams(synthetic_dataset):
         2: [TestSchema.id]
     }
 
+    # Expecting delta between ids to be 1. Setting 1.5 as upper bound
     # Expecting delta between ids to be 1. Setting 1.5 as upper bound
     ngram = NGram(fields=fields, delta_threshold=1.5, timestamp_field=TestSchema.id)
     unshuffled_1, _ = _read_from_tf_tensors(synthetic_dataset, 30, shuffling_queue_capacity=0, min_after_dequeue=0,

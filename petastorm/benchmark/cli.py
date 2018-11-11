@@ -80,6 +80,9 @@ def _parse_args(args):
                              'all data types and implicitly converts some datatypes (e.g. int64->int32) which may'
                              'trigger errors when reading the data from Tensorflow.')
 
+    parser.add_argument('--use-arrow-tables', action='store_true', required=False,
+                        help='Use arrow tables instead of lists of dictionaries for internal data representation')
+
     parser.add_argument('-vv', action='store_true', default=False, help='Sets logging level to DEBUG.')
     parser.add_argument('-v', action='store_true', default=False, help='Sets logging level to INFO.')
 
@@ -114,7 +117,8 @@ def _main(args):
                                     measure_cycles_count=args.measure_cycles, pool_type=args.pool_type,
                                     loaders_count=args.workers_count, profile_threads=args.profile_threads,
                                     read_method=args.read_method, shuffling_queue_size=args.shuffling_queue_size,
-                                    min_after_dequeue=args.min_after_dequeue, pyarrow_serialize=args.pyarrow_serialize)
+                                    min_after_dequeue=args.min_after_dequeue, pyarrow_serialize=args.pyarrow_serialize,
+                                    reader_extra_args={'use_arrow_tables': args.use_arrow_tables}, spawn_new_process=False)
 
     logger.info('Done')
     print('Average sample read rate: {:1.2f} samples/sec; RAM {:1.2f} MB (rss); '

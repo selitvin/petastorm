@@ -23,7 +23,7 @@ from pyspark.sql import SparkSession
 from pyspark.sql.types import StringType, ShortType, LongType, DecimalType, DoubleType, BooleanType
 
 from petastorm.codecs import CompressedImageCodec, NdarrayCodec, \
-    ScalarCodec
+    ScalarCodec, ArrowTensorCodec
 from petastorm.etl.dataset_metadata import materialize_dataset
 from petastorm.etl.rowgroup_indexers import SingleFieldIndexer
 from petastorm.etl.rowgroup_indexing import build_rowgroup_index
@@ -47,6 +47,7 @@ TestSchema = Unischema('TestSchema', [
     UnischemaField('matrix_nullable', np.uint16, _DEFAULT_IMAGE_SIZE, NdarrayCodec(), True),
     UnischemaField('sensor_name', np.unicode_, (1,), NdarrayCodec(), False),
     UnischemaField('string_array_nullable', np.unicode_, (None,), NdarrayCodec(), True),
+    UnischemaField('arrow_tensor_matrix', np.float32, _DEFAULT_IMAGE_SIZE, ArrowTensorCodec(), False),
 ])
 
 
@@ -70,6 +71,7 @@ def _randomize_row(id_num):
         TestSchema.string_array_nullable.name:
             None if id_num % 5 == 0 else np.asarray([], dtype=np.unicode_)
             if id_num % 4 == 0 else np.asarray([str(i + id_num) for i in range(2)], dtype=np.unicode_),
+        TestSchema.arrow_tensor_matrix.name: np.random.random(size=_DEFAULT_IMAGE_SIZE).astype(np.float32),
     }
     return row_dict
 

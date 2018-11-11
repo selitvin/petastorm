@@ -14,36 +14,21 @@
 from __future__ import division
 
 import hashlib
+import operator
 
 import numpy as np
+import pyarrow
+import pyarrow as pa
 from pyarrow import parquet as pq
 from pyarrow.parquet import ParquetFile
 
-from petastorm import utils
 from petastorm.cache import NullCache
 from petastorm.workers_pool.worker_base import WorkerBase
 
 
-def _merge_two_dicts(a, b):
-    """Merges two dictionaries together. If the same key is present in both input dictionaries, the value from 'b'
-    dominates."""
-    result = a.copy()
-    result.update(b)
-    return result
-
-
-def _select_cols(a_dict, keys):
-    """Filteres out entries in a dictionary that have a key which is not part of 'keys' argument. `a_dict` is not
-    modified and a new dictionary is returned."""
-    if keys == list(a_dict.keys()):
-        return a_dict
-    else:
-        return {field_name: a_dict[field_name] for field_name in keys}
-
-
-class ReaderWorker(WorkerBase):
+class ArrowReaderWorker(WorkerBase):
     def __init__(self, worker_id, publish_func, args):
-        super(ReaderWorker, self).__init__(worker_id, publish_func, args)
+        super(ArrowReaderWorker, self).__init__(worker_id, publish_func, args)
 
         self._filesystem = args[0]
         self._dataset_path = args[1]
@@ -113,11 +98,25 @@ class ReaderWorker(WorkerBase):
         # pyarrow would fail if we request a column names that the dataset is partitioned by, so we strip them from
         # the `columns` argument.
         partitions = self._dataset.partitions
-        column_names = set(field.name for field in self._schema.fields.values()) - partitions.partition_names
+        column_names_in_schema = set(field.name for field in self._schema.fields.values())
+        column_names = column_names_in_schema - partitions.partition_names
 
-        all_rows = self._read_with_shuffle_row_drop(piece, pq_file, column_names, shuffle_row_drop_range)
+        table = self._read_with_shuffle_row_drop(piece, pq_file, column_names, shuffle_row_drop_range)
 
-        return [utils.decode_row(row, self._schema) for row in all_rows]
+        table_column_names = {column.name for column in table.columns}
+
+        return self.decode_columns(table, table_column_names.intersection(column_names_in_schema))
+
+    def decode_columns(self, table, column_names):
+        output_columns = filter(lambda column: column.name in column_names, table.columns)
+
+        decoded_columns = []
+
+        for column in output_columns:
+            unischema_field = self._schema.fields[column.name]
+            decoded_columns.append(self._schema.fields[column.name].codec.decode_column(unischema_field, column))
+
+        return pyarrow.Table.from_arrays(decoded_columns)
 
     def _load_rows_with_predicate(self, pq_file, piece, worker_predicate, shuffle_row_drop_partition):
         """Loads all rows that match a predicate from a piece"""
@@ -141,64 +140,77 @@ class ReaderWorker(WorkerBase):
                              'are not valid schema names: ({})'.format(', '.join(invalid_column_names),
                                                                        ', '.join(all_schema_names)))
 
-        other_column_names = all_schema_names - predicate_column_names - \
-            self._dataset.partitions.partition_names
+        other_column_names = all_schema_names - predicate_column_names  # - \
+        # self._dataset.partitions.partition_names
 
         # Read columns needed for the predicate
-        predicate_rows = self._read_with_shuffle_row_drop(piece, pq_file, predicate_column_names,
-                                                          shuffle_row_drop_partition)
+        table_for_predicates = self._read_with_shuffle_row_drop(piece, pq_file, predicate_column_names,
+                                                                shuffle_row_drop_partition)
 
-        # Decode values
-        decoded_predicate_rows = [utils.decode_row(_select_cols(row, predicate_column_names), self._schema)
-                                  for row in predicate_rows]
+        decoded_table_for_predicates = self.decode_columns(table_for_predicates, predicate_column_names)
+        # # Decode values
+        #
+        # # Use the predicate to filter
+        # match_predicate_mask = np.empty((decoded_table_for_predicates.num_rows,), dtype=np.bool_)
+        #
+        # column_names = map(operator.attrgetter('name'), table_for_predicates.columns)
+        # for row_idx in six.moves.range(table_for_predicates.num_rows):
+        #     values = [column.data[row_idx] for column in table_for_predicates.columns]
+        #     row = dict(zip(column_names, values))
+        #     match_predicate_mask[row_idx] = worker_predicate.do_include(row)
 
-        # Use the predicate to filter
-        match_predicate_mask = [worker_predicate.do_include(row) for row in decoded_predicate_rows]
+        decoded_pandas_for_predicates = decoded_table_for_predicates.to_pandas()
+        match_predicate_mask = decoded_pandas_for_predicates.apply(
+            lambda series: worker_predicate.do_include(series.to_dict()), axis=1)
+        erase_mask = match_predicate_mask.map(operator.not_)
 
         # Don't have anything left after filtering? Exit early.
-        if not any(match_predicate_mask):
+        if erase_mask.all():
             return []
 
-        # Remove rows that were filtered out by the predicate
-        filtered_decoded_predicate_rows = [row for i, row in enumerate(decoded_predicate_rows) if
-                                           match_predicate_mask[i]]
+        decoded_pandas_for_predicates[erase_mask] = None
 
         if other_column_names:
             # Read remaining columns
-            other_rows = self._read_with_shuffle_row_drop(piece, pq_file, other_column_names,
-                                                          shuffle_row_drop_partition)
+            other_table = self._read_with_shuffle_row_drop(piece, pq_file, other_column_names,
+                                                           shuffle_row_drop_partition)
+            other_table_decoded = self.decode_columns(other_table, other_column_names)
 
-            # Remove rows that were filtered out by the predicate
-            filtered_other_rows = [row for i, row in enumerate(other_rows) if match_predicate_mask[i]]
+            other_table_pandas = other_table_decoded.to_pandas()
+            other_table_pandas[erase_mask] = None
 
-            # Decode remaining columns
-            decoded_other_rows = [utils.decode_row(row, self._schema) for row in filtered_other_rows]
+            for predicate_column in decoded_pandas_for_predicates.columns:
+                other_table_pandas[predicate_column] = decoded_pandas_for_predicates[predicate_column]
 
-            # Merge predicate needed columns with the remaining
-            all_cols = [_merge_two_dicts(a, b) for a, b in zip(decoded_other_rows, filtered_decoded_predicate_rows)]
-            return all_cols
+            result_table_pandas = other_table_pandas
         else:
-            return filtered_decoded_predicate_rows
+            result_table_pandas = decoded_pandas_for_predicates
+
+        filtered_result = pa.Table.from_pandas(result_table_pandas[match_predicate_mask], preserve_index=False)
+        return filtered_result
 
     def _read_with_shuffle_row_drop(self, piece, pq_file, column_names, shuffle_row_drop_partition):
-        data_frame = piece.read(
+        table = piece.read(
             open_file_func=lambda _: pq_file,
             columns=column_names,
             partitions=self._dataset.partitions
-        ).to_pandas()
+        )
 
-        num_rows = len(data_frame)
+        num_rows = len(table)
         num_partitions = shuffle_row_drop_partition[1]
         this_partition = shuffle_row_drop_partition[0]
 
-        partition_indexes = np.floor(np.arange(num_rows) / (float(num_rows) / min(num_rows, num_partitions)))
+        if num_partitions > 1:
+            data_frame_pandas = table.to_pandas()
+            partition_indexes = np.floor(np.arange(num_rows) / (float(num_rows) / min(num_rows, num_partitions)))
 
-        if self._ngram:
-            # If we have an ngram we need to take elements from the next partition to build the sequence
-            next_partition_indexes = np.where(partition_indexes >= this_partition + 1)
-            if next_partition_indexes[0].size:
-                next_partition_to_add = next_partition_indexes[0][0:self._ngram.length - 1]
-                partition_indexes[next_partition_to_add] = this_partition
+            if self._ngram:
+                # If we have an ngram we need to take elements from the next partition to build the sequence
+                next_partition_indexes = np.where(partition_indexes >= this_partition + 1)
+                if next_partition_indexes[0].size:
+                    next_partition_to_add = next_partition_indexes[0][0:self._ngram.length - 1]
+                    partition_indexes[next_partition_to_add] = this_partition
 
-        selected_dataframe = data_frame.loc[partition_indexes == this_partition]
-        return selected_dataframe.to_dict('records')
+            table = pyarrow.Table.from_pandas(data_frame_pandas.loc[partition_indexes == this_partition])
+
+        return table  # .to_dict('records')
