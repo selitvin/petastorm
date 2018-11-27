@@ -551,7 +551,7 @@ class ArrowReaderWorkerResultsQueueReader(object):
 
             # We are receiving decoded rows from the worker in chunks. We store the list internally
             # and return a single item upon each consequent call to __next__
-            if self._result_buffer.empty():
+            while self._result_buffer.empty():
                 self._result_buffer.put(workers_pool.get_results())
 
             next_batch = self._result_buffer.get()
