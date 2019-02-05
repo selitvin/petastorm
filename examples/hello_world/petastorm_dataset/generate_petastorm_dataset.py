@@ -58,6 +58,7 @@ def generate_petastorm_dataset(output_url='file:///tmp/hello_world_dataset'):
         spark.createDataFrame(rows_rdd, HelloWorldSchema.as_spark_schema()) \
             .coalesce(10) \
             .write \
+            .partitionBy('id') \
             .mode('overwrite') \
             .parquet(output_url)
 

@@ -18,10 +18,11 @@ using plain Python"""
 from __future__ import print_function
 
 from petastorm import make_reader
+from petastorm.predicates import in_lambda
 
 
 def python_hello_world(dataset_url='file:///tmp/hello_world_dataset'):
-    with make_reader(dataset_url) as reader:
+    with make_reader(dataset_url, predicate=in_lambda(['id'], lambda x: x == '3')) as reader:
         # Pure python
         for sample in reader:
             print(sample.id)
