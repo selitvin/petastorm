@@ -8,6 +8,7 @@ all: rm-image build
 build:
 	cd .. && docker build . \
 	-f ./docker/Dockerfile \
+	--network host \
 	--tag petastorm
 
 # Create the CI container for Travis use

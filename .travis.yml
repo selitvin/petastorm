@@ -29,6 +29,7 @@ install:
   # installed, we do rerun dependencies installation to refresh ersions of the dependencies
   # on each build if needed
   - docker pull selitvin/petastorm_ci:latest
+  - docker images
 
 before_script:
   # run docker container for an hour. Will execute all docker commands inside this container
