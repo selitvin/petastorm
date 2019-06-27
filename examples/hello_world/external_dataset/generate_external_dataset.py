@@ -18,36 +18,39 @@ with petastorm. Generates a sample dataset from random data.
 """
 
 import random
+
 from pyspark.sql import SparkSession, Row
-from pyspark.sql.types import StructType, StructField, IntegerType
-
-
-NON_PETASTORM_SCHEMA = StructType([
-    StructField("id", IntegerType(), True),
-    StructField("value1", IntegerType(), True),
-    StructField("value2", IntegerType(), True)
-])
+from pyspark.sql.types import StructType, StructField, DateType, IntegerType, BinaryType
 
 
 def row_generator(x):
     """Returns a single entry in the generated dataset. Return a bunch of random values as an example."""
-    return Row(id=x, value1=random.randint(-255, 255), value2=random.randint(-255, 255))
+    return Row(id=x, label=random.randint(-255, 255), image=bytearray('abcdefg'.encode('utf-8')))
 
 
 def generate_external_dataset(output_url='file:///tmp/external_dataset'):
     """Creates an example dataset at output_url in Parquet format"""
-    spark = SparkSession.builder\
-        .master('local[2]')\
+    spark = SparkSession.builder \
+        .master('local[2]') \
         .getOrCreate()
     sc = spark.sparkContext
 
-    rows_count = 10
-    rows_rdd = sc.parallelize(range(rows_count))\
+    hadoop_config = spark.sparkContext._jsc.hadoopConfiguration()
+    hadoop_config.setInt('parquet.block.size', 1)
+
+    rows_count = 1000000
+    rows_rdd = sc.parallelize(range(rows_count)) \
         .map(row_generator)
 
-    spark.createDataFrame(rows_rdd).\
-        write.\
-        mode('overwrite').\
+    schema = StructType([
+        StructField('label', IntegerType(), False),
+        StructField('image', BinaryType(), False),
+    ])
+
+
+    spark.createDataFrame(rows_rdd, schema). \
+        write. \
+        mode('overwrite'). \
         parquet(output_url)
 
 
