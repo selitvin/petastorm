@@ -139,11 +139,11 @@ def make_reader(dataset_url,
     else:
         raise ValueError('Unknown cache_type: {}'.format(cache_type))
 
-    try:
-        dataset_metadata.get_schema_from_dataset_url(dataset_url, hdfs_driver=hdfs_driver)
-    except PetastormMetadataError:
-        raise RuntimeError('Currently make_reader supports reading only Petastorm datasets. '
-                           'To read from a non-Petastorm Parquet store use make_batch_reader')
+    # try:
+    # dataset_metadata.get_schema_from_dataset_url(dataset_url, hdfs_driver=hdfs_driver)
+    # except PetastormMetadataError:
+    #     raise RuntimeError('Currently make_reader supports reading only Petastorm datasets. '
+    #                        'To read from a non-Petastorm Parquet store use make_batch_reader')
 
     if reader_pool_type == 'thread':
         reader_pool = ThreadPool(workers_count, results_queue_size)

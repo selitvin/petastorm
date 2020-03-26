@@ -25,7 +25,7 @@ from petastorm.cache import NullCache
 from petastorm.compat import compat_piece_read
 from petastorm.workers_pool import EmptyResultError
 from petastorm.workers_pool.worker_base import WorkerBase
-
+import time
 
 def _merge_two_dicts(a, b):
     """Merges two dictionaries together. If the same key is present in both input dictionaries, the value from 'b'
@@ -130,6 +130,7 @@ class PyDictReaderWorker(WorkerBase):
             of partitions.
         :return:
         """
+        t0 = time.time()
 
         if not self._dataset:
             self._dataset = pq.ParquetDataset(
@@ -164,6 +165,8 @@ class PyDictReaderWorker(WorkerBase):
 
         if self._ngram:
             all_cols = self._ngram.form_ngram(data=all_cols, schema=self._schema)
+
+        print("localcache: ", time.time() - t0)
 
         if all_cols:
             self.publish_func(all_cols)

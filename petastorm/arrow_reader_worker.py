@@ -26,7 +26,7 @@ from petastorm.cache import NullCache
 from petastorm.compat import compat_piece_read, compat_table_columns_gen, compat_column_data
 from petastorm.workers_pool import EmptyResultError
 from petastorm.workers_pool.worker_base import WorkerBase
-
+import time
 
 class ArrowReaderWorkerResultsQueueReader(object):
     def __init__(self):
@@ -125,6 +125,7 @@ class ArrowReaderWorker(WorkerBase):
         :return:
         """
 
+        t0 = time.time()
         if not self._dataset:
             self._dataset = pq.ParquetDataset(
                 self._dataset_path_or_paths,
@@ -165,16 +166,19 @@ class ArrowReaderWorker(WorkerBase):
             all_cols = self._local_cache.get(cache_key,
                                              lambda: self._load_rows(parquet_file, piece, shuffle_row_drop_partition))
 
+        print("Cumulative: ", time.time() - t0)
+
         if all_cols:
             self.publish_func(all_cols)
 
     @staticmethod
     def _check_shape_and_ravel(x, field):
         if not isinstance(x, np.ndarray):
-            raise ValueError('field {name} must be numpy array type.'.format(name=field.name))
+            raise ValueError('field "{name}" must be numpy array type. Got {actual_type}'.format(name=field.name,
+                                                                                                 actual_type=type(x)))
         if x.shape != field.shape:
-            raise ValueError('field {name} must be the shape {shape}'
-                             .format(name=field.name, shape=field.shape))
+            raise ValueError('field "{name}" must be the shape "{shape}". Got "{actual_shape}". '
+                             .format(name=field.name, shape=field.shape, actual_shape=x.shape))
         if not x.flags.c_contiguous:
             raise ValueError('field {name} error: only support row major multi-dimensional array.'
                              .format(name=field.name))
@@ -191,7 +195,9 @@ class ArrowReaderWorker(WorkerBase):
             result_as_pandas = result.to_pandas()
             # A user may omit `func` value if they intend just to delete some fields using the TransformSpec
             if self._transform_spec.func:
+                t0 = time.time()
                 transformed_result = self._transform_spec.func(result_as_pandas)
+                print(time.time() - t0)
             else:
                 transformed_result = result_as_pandas
 
@@ -201,7 +207,9 @@ class ArrowReaderWorker(WorkerBase):
             for field_to_remove in set(transformed_result.columns) & set(self._transform_spec.removed_fields):
                 del transformed_result[field_to_remove]
 
+
             transformed_result_column_set = set(transformed_result.columns)
+
             transformed_schema_column_set = set([f.name for f in self._transformed_schema.fields.values()])
 
             if transformed_result_column_set != transformed_schema_column_set:
@@ -217,7 +225,9 @@ class ArrowReaderWorker(WorkerBase):
                     transformed_result[field.name] = transformed_result[field.name] \
                         .map(lambda x, f=field: self._check_shape_and_ravel(x, f))
 
-            result = pa.Table.from_pandas(transformed_result, preserve_index=False)
+            t0 = time.time()
+            result = pa.Table.from_pandas(transformed_result, preserve_index=False, nthreads=10)
+            print("From pandas: {}".format(time.time() - t0))
 
         return result
 
