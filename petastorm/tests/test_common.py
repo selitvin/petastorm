@@ -174,8 +174,6 @@ def create_test_scalar_dataset(output_url, num_rows, num_files=4, spark=None, pa
     :return: A list of records with a copy of the data written to the dataset.
     """
 
-    is_list_of_scalar_broken = pa.__version__ == '0.15.0'
-
     partition_by = partition_by or []
     shutdown = False
     if not spark:
@@ -196,9 +194,9 @@ def create_test_scalar_dataset(output_url, num_rows, num_files=4, spark=None, pa
                   'timestamp': np.datetime64('2005-02-25T03:30'),
                   'string': np.unicode_('hello_{}'.format(i)),
                   'string2': np.unicode_('world_{}'.format(i)),
-                  'float64': np.float64(i) * .66}
-        if not is_list_of_scalar_broken:
-            result['int_fixed_size_list'] = np.arange(1 + i, 10 + i).astype(np.int32)
+                  'float64': np.float64(i) * .66,
+                  'int_fixed_size_list': np.arange(1 + i, 10 + i).astype(np.int32),
+                  }
         result = OrderedDict(sorted(result.items(), key=lambda item: item[0]))
         return result
 
@@ -211,13 +209,11 @@ def create_test_scalar_dataset(output_url, num_rows, num_files=4, spark=None, pa
     # to think about local timezone in the tests
     for row in expected_data_as_scalars:
         row['timestamp'] = row['timestamp'].replace(tzinfo=pytz.UTC)
-        if not is_list_of_scalar_broken:
-            row['int_fixed_size_list'] = row['int_fixed_size_list'].tolist()
+        row['int_fixed_size_list'] = row['int_fixed_size_list'].tolist()
 
     rows = [Row(**row) for row in expected_data_as_scalars]
 
-    maybe_int_fixed_size_list_field = [StructField('int_fixed_size_list', ArrayType(IntegerType(), False), False)] \
-        if not is_list_of_scalar_broken else []
+    maybe_int_fixed_size_list_field = [StructField('int_fixed_size_list', ArrayType(IntegerType(), False), False)]
 
     # WARNING: surprisingly, schema fields and row fields are matched only by order and not name.
     # We must maintain alphabetical order of the struct fields for the code to work!!!
